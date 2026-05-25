@@ -1,11 +1,9 @@
-# finntradingfx-ship-it.github.io
-fx entry calculator
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>外匯進場計算機 (極致真實風控版)</title>
+    <title>外匯進場計算機</title>
     <style>
         :root {
             --bg-color: #121212;
