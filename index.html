@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Forex進場計算機</title>
+    <title>外匯進場計算機 (極致真實風控版)</title>
     <style>
         :root {
             --bg-color: #121212;
@@ -13,6 +13,7 @@
             --danger: #f44336;
             --info: #2196F3;
             --border: #333;
+            --strict: #9C27B0;
         }
         body {
             background-color: var(--bg-color);
@@ -149,6 +150,14 @@
             border-top: 1px dashed #555; 
             padding-top: 12px;
         }
+        
+        .input-group {
+            display: flex;
+            flex: 1;
+            gap: 5px;
+        }
+        .input-group input { flex: 2; }
+        .input-group select { flex: 1; padding: 5px 2px; font-size: 14px; }
     </style>
 </head>
 <body>
@@ -178,8 +187,14 @@
             <input type="number" id="riskAmount" value="200" onchange="saveSettings()">
         </div>
         <div class="form-group">
-            <label>單手來回手續費 ($)</label>
-            <input type="number" id="commission" value="6" step="0.5" onchange="saveSettings()">
+            <label>單邊手續費 (每手)</label>
+            <div class="input-group">
+                <input type="number" id="commission" value="3" step="0.001" onchange="saveSettings()">
+                <select id="commType" onchange="saveSettings()">
+                    <option value="fixed">$ (固定)</option>
+                    <option value="percent">% (名目)</option>
+                </select>
+            </div>
         </div>
     </div>
 
@@ -192,11 +207,15 @@
 
         <div class="form-group">
             <label>交易商品</label>
-            <select id="instrument" onchange="updateInstrumentSettings(); saveSettings()">
+            <select id="instrument" onchange="onInstrumentChange()">
                 <option value="EURUSD">EURUSD (等歐美系)</option>
                 <option value="USDJPY">USDJPY (等日圓系)</option>
                 <option value="XAUUSD">XAUUSD (黃金)</option>
             </select>
+        </div>
+        <div class="form-group">
+            <label>合約規格 (Size)</label>
+            <input type="number" id="contractSizeInput" value="100000" onchange="saveSettings()">
         </div>
         <div class="form-group">
             <label>盤面止損點 (SSL)</label>
@@ -251,9 +270,18 @@
             </div>
         </div>
 
+        <div class="result-box" id="geometryBox" style="border-left-color: #f44336; display: none;">
+            <div class="result-item" style="font-weight: bold; color: #ff5252;">
+                <span>幾何空間檢核 (Noise Filter):</span>
+                <span id="resGeometryStatus">未達標</span>
+            </div>
+            <div class="warning" id="resGeometryWarning" style="color: #ff5252; font-weight: normal; margin-top: 8px;">
+                </div>
+        </div>
+
         <div class="result-box">
             <div class="result-item">
-                <span>最佳進場點位 (RE):</span>
+                <span>結構風報進場點 (RE):</span>
                 <span id="resRE" class="highlight">-</span>
             </div>
             <div class="result-item" style="font-size: 14px; color: #aaa;">
@@ -283,21 +311,47 @@
                 <span style="font-weight: bold; color: #e0e0e0;">真實淨風報比:</span>
                 <span id="resActualRR" style="font-weight: bold; color: #e0e0e0;">-</span>
             </div>
+            
+            <div class="result-item" style="font-size: 14px; margin-top: 8px;">
+                <span>手續費佔比 (摩擦成本):</span>
+                <span id="resCommRatio">-</span>
+            </div>
+
             <div class="result-item" style="font-size: 14px; color: #e0e0e0; margin-top: 8px; border-top: 1px solid #333; padding-top: 8px; font-weight: bold;">
                 <span>2R極端預付款比例:</span>
                 <span id="resMargin">-</span>
             </div>
             <div class="warning" id="resWarning"></div>
         </div>
+
+        <div class="result-box" style="border-left-color: var(--strict); margin-top: 10px;" id="trueREBox">
+            <div class="result-item" style="font-weight: bold;">
+                <span id="resTrueRELabel" style="color: #E1BEE7;">嚴格風報進場點 (True RE):</span>
+                <span id="resTrueRE" style="color: #E1BEE7; font-size: 20px;">-</span>
+            </div>
+            <div class="result-item" style="font-size: 14px; color: #aaa;">
+                <span id="resTrueLimitLabel">嚴格掛單價位 (True Limit):</span>
+                <span id="resTrueLimit">-</span>
+            </div>
+            <div class="warning" style="color: #CE93D8; font-weight: normal; margin-top: 8px;" id="resTrueREWarning">
+                💡 摩擦成本健康。若想追求極致淨賠率，可改掛此點位進場。
+            </div>
+        </div>
+
     </div>
 
     <script>
         let currentStrategy = 'pattern';
 
         window.onload = function() {
-            const fields = ['initialBalance', 'currentBalance', 'leverage', 'riskAmount', 'commission', 'instrument', 'rr', 'spread', 'wave', 'fibLevel'];
+            const fields = [
+                'initialBalance', 'currentBalance', 'leverage', 'riskAmount', 
+                'commission', 'commType', 'instrument', 'contractSizeInput', 
+                'rr', 'spread', 'wave', 'fibLevel'
+            ];
             fields.forEach(id => {
-                if(localStorage.getItem(id)) document.getElementById(id).value = localStorage.getItem(id);
+                const val = localStorage.getItem(id);
+                if(val !== null) document.getElementById(id).value = val;
             });
             
             const savedTab = localStorage.getItem('activeTab');
@@ -305,11 +359,15 @@
             
             updatePnL(); 
             updateFibRR(); 
-            updateInstrumentSettings();
+            updateInstrumentStep();
         };
 
         function saveSettings() {
-            const fields = ['initialBalance', 'currentBalance', 'leverage', 'riskAmount', 'commission', 'instrument', 'rr', 'spread', 'wave', 'fibLevel'];
+            const fields = [
+                'initialBalance', 'currentBalance', 'leverage', 'riskAmount', 
+                'commission', 'commType', 'instrument', 'contractSizeInput', 
+                'rr', 'spread', 'wave', 'fibLevel'
+            ];
             fields.forEach(id => localStorage.setItem(id, document.getElementById(id).value));
         }
 
@@ -365,7 +423,20 @@
             return flooredRR;
         }
 
-        function updateInstrumentSettings() {
+        function onInstrumentChange() {
+            const inst = document.getElementById('instrument').value;
+            const sizeInput = document.getElementById('contractSizeInput');
+            
+            if (inst === 'XAUUSD') {
+                sizeInput.value = "100";
+            } else {
+                sizeInput.value = "100000";
+            }
+            updateInstrumentStep();
+            saveSettings();
+        }
+
+        function updateInstrumentStep() {
             const inst = document.getElementById('instrument').value;
             const sslInput = document.getElementById('ssl');
             const stpInput = document.getElementById('stp');
@@ -386,9 +457,13 @@
             const currentBalance = parseFloat(document.getElementById('currentBalance').value) || 0;
             const leverage = parseFloat(document.getElementById('leverage').value) || 1; 
             const riskAmount = parseFloat(document.getElementById('riskAmount').value) || 0;
-            const commission = parseFloat(document.getElementById('commission').value) || 0; 
+            
+            const commValue = parseFloat(document.getElementById('commission').value) || 0; 
+            const commType = document.getElementById('commType').value;
             
             const inst = document.getElementById('instrument').value;
+            const contractSize = parseFloat(document.getElementById('contractSizeInput').value) || 100000;
+            
             const ssl = parseFloat(document.getElementById('ssl').value);
             const stp = parseFloat(document.getElementById('stp').value);
             
@@ -436,7 +511,6 @@
             }
 
             let decimal = 0.00001;
-            let contractSize = 100000;
             let toFixedPoint = 5;
 
             if(inst === 'USDJPY') {
@@ -444,7 +518,6 @@
                 toFixedPoint = 3;
             } else if(inst === 'XAUUSD') {
                 decimal = 0.01;
-                contractSize = 100;
                 toFixedPoint = 2;
             }
 
@@ -475,78 +548,183 @@
                 hardSL = RSL + lossDist; 
             }
 
-            let lotSize = 0;
+            // === 動態手續費計算 (維度一：財務風險分配) ===
+            let commPerLotAtSL = 0;
+            let commPerLotAtTP = 0;
+            let commPerLotAtHardSL = 0;
             
-            // 計算手數
-            if (inst === 'USDJPY') {
-                lotSize = riskAmount / (((lossDist * contractSize) / RE) + commission);
+            if (commType === 'fixed') {
+                commPerLotAtSL = commValue * 2;
+                commPerLotAtTP = commValue * 2;
+                commPerLotAtHardSL = commValue * 2;
             } else {
-                lotSize = riskAmount / ((lossDist * contractSize) + commission);
+                const pct = commValue / 100;
+                if (inst === 'USDJPY') {
+                    commPerLotAtSL = contractSize * 2 * pct;
+                    commPerLotAtTP = contractSize * 2 * pct;
+                    commPerLotAtHardSL = contractSize * 2 * pct;
+                } else {
+                    commPerLotAtSL = contractSize * (RE + RSL) * pct;
+                    commPerLotAtTP = contractSize * (RE + RTP) * pct;
+                    commPerLotAtHardSL = contractSize * (RE + hardSL) * pct;
+                }
             }
+
+            let floatLoss1R_per_lot = 0;
+            if (inst === 'USDJPY') {
+                floatLoss1R_per_lot = (lossDist * contractSize) / RE;
+            } else {
+                floatLoss1R_per_lot = lossDist * contractSize;
+            }
+            
+            let lotSize = riskAmount / (floatLoss1R_per_lot + commPerLotAtSL);
             lotSize = Math.floor(lotSize * 100) / 100;
 
-            const totalCommission = commission * lotSize;
-
-            // 計算 1R 純浮動虧損，用以推算最壞情況的淨值
-            let floatLoss1R = 0;
+            const actualRisk = (floatLoss1R_per_lot * lotSize) + (lotSize * commPerLotAtSL);
+            
+            let floatProfit_per_lot = 0;
             if (inst === 'USDJPY') {
-                floatLoss1R = (lossDist * contractSize * lotSize) / RE;
+                floatProfit_per_lot = (profitDist * contractSize) / RE;
             } else {
-                floatLoss1R = lossDist * contractSize * lotSize;
+                floatProfit_per_lot = profitDist * contractSize;
+            }
+            
+            const actualReward = (floatProfit_per_lot * lotSize) - (lotSize * commPerLotAtTP);
+            const actualRR = (actualRisk > 0 && actualReward > 0) ? (actualReward / actualRisk) : 0;
+
+
+            // === 維度二：幾何物理空間檢核 (Geometric Space Threshold) ===
+            // 1. 計算每手每步(Point)的價值 (換算為 USD)
+            let pointValuePerLot = 0;
+            if (inst === 'USDJPY') {
+                pointValuePerLot = (contractSize * decimal) / RE; 
+            } else {
+                pointValuePerLot = contractSize * decimal;
             }
 
-            // === 核心更新：在 2R 硬止損時的極端保證金計算 ===
-            // 淨值 = 現階段資金 - (2倍的純浮動虧損) - 雙向手續費
-            const equityAtHardSL = currentBalance - (floatLoss1R * 2) - totalCommission;
+            // 2. 將雙邊手續費(USD)轉換為盤面點距(Points)
+            const commPoints = commPerLotAtSL / pointValuePerLot;
+
+            // 3. 計算總雜訊成本與 2.0 倍存活線
+            const noisePoints = commPoints + spreadPoints + wavePoints;
+            const minSurvivalDistPoints = noisePoints * 2.0;
+
+            // 4. 實際結構空間
+            const lossDistPoints = lossDist / decimal;
             
-            // 重新計算在硬止損點位時，券商所要求的保證金
+            const geometryBox = document.getElementById('geometryBox');
+            if (lossDistPoints < minSurvivalDistPoints) {
+                geometryBox.style.display = 'block';
+                document.getElementById('resGeometryWarning').innerText = 
+                    `💀 無效交易：結構空間 (${lossDistPoints.toFixed(1)} 步) 未達雜訊成本 (${noisePoints.toFixed(1)} 步) 的 2 倍。\n此為隨機漫步陷阱，不具備正期望值！`;
+            } else {
+                geometryBox.style.display = 'none';
+            }
+
+
+            // === 摩擦成本佔比 ===
+            const totalCommAtSL = lotSize * commPerLotAtSL;
+            const commRatio = actualRisk > 0 ? (totalCommAtSL / actualRisk) * 100 : 0;
+
+
+            // === 真實風報進場點 (True RR Limit) 逆向工程 ===
+            let C_single = 0;
+            if (commType === 'fixed') {
+                C_single = commValue; 
+            } else {
+                const pct = commValue / 100;
+                if (inst === 'USDJPY') {
+                    C_single = contractSize * pct;
+                } else {
+                    C_single = contractSize * RE * pct; 
+                }
+            }
+
+            let C_quote = C_single;
+            if (inst === 'USDJPY') {
+                C_quote = C_single * RE; 
+            }
+            
+            const priceOffset = C_quote / contractSize;
+            
+            let trueRE = 0;
+            let trueLimitPrice = 0;
+            if (direction === 'buy') {
+                trueRE = RE - priceOffset; 
+                trueLimitPrice = trueRE + S; 
+            } else {
+                trueRE = RE + priceOffset; 
+                trueLimitPrice = trueRE; 
+            }
+
+            // === 計算 2R 硬止損時的極端預付款比例 ===
+            const floatLoss1R_total = floatLoss1R_per_lot * lotSize;
+            const totalCommAtHardSL = lotSize * commPerLotAtHardSL;
+            
+            const equityAtHardSL = currentBalance - (floatLoss1R_total * 2) - totalCommAtHardSL;
+            
             let marginReqAtHardSL = 0;
             if (inst === 'USDJPY') {
                 marginReqAtHardSL = (lotSize * contractSize) / leverage; 
             } else {
-                // EURUSD 或 XAUUSD 的保證金會隨當下硬止損的報價而變動
                 marginReqAtHardSL = (lotSize * contractSize * hardSL) / leverage;
             }
 
-            // 得出最極端情況下的預付款比例
             const marginLevelAtHardSL = marginReqAtHardSL > 0 ? (equityAtHardSL / marginReqAtHardSL) * 100 : 0;
-            // ===============================================
 
-            let actualRisk = floatLoss1R + totalCommission;
-            let actualReward = 0;
-            
-            if (inst === 'USDJPY') {
-                actualReward = ((profitDist * contractSize * lotSize) / RE) - totalCommission;
-            } else {
-                actualReward = (profitDist * contractSize * lotSize) - totalCommission;
-            }
-
-            const actualRR = (actualRisk > 0 && actualReward > 0) ? (actualReward / actualRisk) : 0;
-
+            // === 畫面渲染 ===
             document.getElementById('resRE').innerText = RE.toFixed(toFixedPoint);
             document.getElementById('resLimit').innerText = limitPrice.toFixed(toFixedPoint);
-            
             document.getElementById('resHardSL').innerText = hardSL.toFixed(toFixedPoint);
             document.getElementById('resHardSLWarning').innerText = "🛡️ 提醒：若價格打到此位，即虧損 2R (含手續費)。請確實將平台硬止損掛於此處。";
 
             document.getElementById('resLot').innerText = lotSize > 0 ? lotSize + " 手" : "風險過小無法下單";
-            
             document.getElementById('resRealRiskReward').innerText = "-$" + actualRisk.toFixed(2) + " / +$" + actualReward.toFixed(2);
             document.getElementById('resActualRR').innerText = "1 : " + actualRR.toFixed(2);
-            
-            // 輸出極端預付款比例與警告邏輯
             document.getElementById('resMargin').innerText = marginLevelAtHardSL.toFixed(2) + " %";
             
+            // 摩擦成本警告邏輯
+            document.getElementById('resCommRatio').innerText = commRatio.toFixed(1) + " %";
+            if (commRatio > 15) {
+                document.getElementById('resCommRatio').style.color = "#ff5252";
+                document.getElementById('resCommRatio').style.fontWeight = "bold";
+                document.getElementById('trueREBox').style.borderLeftColor = "#ff5252";
+                
+                document.getElementById('resTrueRELabel').style.color = "#ff5252";
+                document.getElementById('resTrueRE').style.color = "#ff5252";
+                document.getElementById('resTrueLimitLabel').style.color = "#ff5252";
+                document.getElementById('resTrueLimit').style.color = "#ff5252";
+                
+                document.getElementById('resTrueREWarning').style.color = "#ff5252";
+                document.getElementById('resTrueREWarning').innerText = "⚠️ 摩擦成本過高！強烈建議改掛此「嚴格風報進場點」，否則實質盈虧比將嚴重縮水。";
+            } else {
+                document.getElementById('resCommRatio').style.color = "#aaa";
+                document.getElementById('resCommRatio').style.fontWeight = "normal";
+                document.getElementById('trueREBox').style.borderLeftColor = "var(--strict)";
+                
+                document.getElementById('resTrueRELabel').style.color = "#E1BEE7";
+                document.getElementById('resTrueRE').style.color = "#E1BEE7";
+                document.getElementById('resTrueLimitLabel').style.color = "#aaa";
+                document.getElementById('resTrueLimit').style.color = "#aaa";
+                
+                document.getElementById('resTrueREWarning').style.color = "#CE93D8";
+                document.getElementById('resTrueREWarning').innerText = "💡 摩擦成本健康。若想追求極致淨賠率，可改掛此點位進場。";
+            }
+
+            // 輸出 True RE 與 True Limit
+            document.getElementById('resTrueRE').innerText = trueRE.toFixed(toFixedPoint);
+            document.getElementById('resTrueLimit').innerText = trueLimitPrice.toFixed(toFixedPoint);
+
             const warningEl = document.getElementById('resWarning');
             if (marginLevelAtHardSL < 100) {
                 warningEl.innerText = "💀 致命警告：若打到硬止損，預付款將低於 100%，券商必定提前強制平倉 (爆倉)！請務必降低風控手數。";
-                document.getElementById('resMargin').style.color = "#ff5252"; // 極度危險的紅色
+                document.getElementById('resMargin').style.color = "#ff5252"; 
             } else if (marginLevelAtHardSL < 200) {
                 warningEl.innerText = "⚠️ 警告：2R 硬止損時的預付款比例低於 200%，保證金過載風險偏高。";
-                document.getElementById('resMargin').style.color = "#FF9800"; // 橘色警告
+                document.getElementById('resMargin').style.color = "#FF9800"; 
             } else {
                 warningEl.innerText = "✅ 安全：即使打到硬止損，保證金依然充足。";
-                document.getElementById('resMargin').style.color = "#4CAF50"; // 綠色安全
+                document.getElementById('resMargin').style.color = "#4CAF50"; 
             }
 
             document.getElementById('resultArea').style.display = 'block';
